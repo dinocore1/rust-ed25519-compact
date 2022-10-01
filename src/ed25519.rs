@@ -1,12 +1,15 @@
+use core::fmt;
+use core::ops::{Deref, DerefMut};
+
+use super::common::*;
 #[cfg(feature = "blind-keys")]
-use super::curve25519::{ge_scalarmult, sc_invert, sc_mul};
-use super::curve25519::{
-    ge_scalarmult_base, is_identity, sc_muladd, sc_reduce, sc_reduce32, GeP2, GeP3,
+use super::edwards25519::{ge_scalarmult, sc_invert, sc_mul};
+use super::edwards25519::{
+    ge_scalarmult_base, is_identity, sc_muladd, sc_reduce, sc_reduce32, sc_reject_noncanonical,
+    GeP2, GeP3,
 };
 use super::error::Error;
 use super::sha512;
-use core::fmt;
-use core::ops::Deref;
 
 /// A public key.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -73,9 +76,7 @@ impl SecretKey {
 
     /// Returns the seed of a secret key.
     pub fn seed(&self) -> Seed {
-        let mut seed = [0u8; Seed::BYTES];
-        seed.copy_from_slice(&self[0..Seed::BYTES]);
-        Seed(seed)
+        Seed::from_slice(&self[0..Seed::BYTES]).unwrap()
     }
 }
 
@@ -85,6 +86,13 @@ impl Deref for SecretKey {
     /// Returns a secret key as bytes.
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl DerefMut for SecretKey {
+    /// Returns a secret key as mutable bytes.
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -142,121 +150,13 @@ impl Deref for Signature {
     }
 }
 
-/// A seed, which a key pair can be derived from.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Seed([u8; Seed::BYTES]);
-
-impl From<[u8; 32]> for Seed {
-    fn from(seed: [u8; 32]) -> Self {
-        Seed(seed)
-    }
-}
-
-impl Seed {
-    /// Number of raw bytes in a seed.
-    pub const BYTES: usize = 32;
-
-    /// Creates a seed from raw bytes.
-    pub fn new(seed: [u8; Seed::BYTES]) -> Self {
-        Seed(seed)
-    }
-
-    /// Creates a seed from a slice.
-    pub fn from_slice(seed: &[u8]) -> Result<Self, Error> {
-        let mut seed_ = [0u8; Seed::BYTES];
-        if seed.len() != seed_.len() {
-            return Err(Error::InvalidSeed);
-        }
-        seed_.copy_from_slice(seed);
-        Ok(Seed::new(seed_))
-    }
-}
-
-#[cfg(feature = "random")]
-impl Default for Seed {
-    /// Generates a random seed.
-    fn default() -> Self {
-        let mut seed = [0u8; Seed::BYTES];
-        getrandom::getrandom(&mut seed).expect("RNG failure");
-        Seed(seed)
-    }
-}
-
-#[cfg(feature = "random")]
-impl Seed {
-    /// Generates a random seed.
-    pub fn generate() -> Self {
-        Seed::default()
-    }
-}
-
-impl Deref for Seed {
-    type Target = [u8; Seed::BYTES];
-
-    /// Returns a seed as raw bytes.
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Noise, for non-deterministic signatures.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Noise([u8; Noise::BYTES]);
-
-impl Noise {
-    /// Number of raw bytes for a noise component.
-    pub const BYTES: usize = 16;
-
-    /// Creates a new noise component from raw bytes.
-    pub fn new(noise: [u8; Noise::BYTES]) -> Self {
-        Noise(noise)
-    }
-
-    /// Creates noise from a slice.
-    pub fn from_slice(noise: &[u8]) -> Result<Self, Error> {
-        let mut noise_ = [0u8; Noise::BYTES];
-        if noise.len() != noise_.len() {
-            return Err(Error::InvalidSeed);
-        }
-        noise_.copy_from_slice(noise);
-        Ok(Noise::new(noise_))
-    }
-}
-
-impl Deref for Noise {
-    type Target = [u8; Noise::BYTES];
-
-    /// Returns a noise as raw bytes.
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[cfg(feature = "random")]
-impl Default for Noise {
-    /// Generates random noise.
-    fn default() -> Self {
-        let mut noise = [0u8; Noise::BYTES];
-        getrandom::getrandom(&mut noise).expect("RNG failure");
-        Noise(noise)
-    }
-}
-
-#[cfg(feature = "random")]
-impl Noise {
-    /// Generates random noise.
-    pub fn generate() -> Self {
-        Noise::default()
-    }
-}
-
 impl PublicKey {
-    /// Verifies that the signature `signature` is valid for the message `message`.
+    /// Verifies that the signature `signature` is valid for the message
+    /// `message`.
     pub fn verify(&self, message: impl AsRef<[u8]>, signature: &Signature) -> Result<(), Error> {
+        let r = &signature[0..32];
         let s = &signature[32..64];
-        if check_lt_l(s) {
-            return Err(Error::InvalidSignature);
-        }
+        sc_reject_noncanonical(s)?;
         if is_identity(self) || self.iter().fold(0, |acc, x| acc | x) == 0 {
             return Err(Error::WeakPublicKey);
         }
@@ -268,7 +168,7 @@ impl PublicKey {
         };
 
         let mut hasher = sha512::Hash::new();
-        hasher.update(&signature[0..32]);
+        hasher.update(r);
         hasher.update(&self[..]);
         hasher.update(message);
         let mut hash = hasher.finalize();
@@ -291,7 +191,8 @@ impl PublicKey {
 
 impl SecretKey {
     /// Computes a signature for the message `message` using the secret key.
-    /// The noise parameter is optional, but recommended in order to mitigate fault attacks.
+    /// The noise parameter is optional, but recommended in order to mitigate
+    /// fault attacks.
     pub fn sign(&self, message: impl AsRef<[u8]>, noise: Option<Noise>) -> Signature {
         let seed = &self[0..32];
         let pk = &self[32..64];
@@ -364,7 +265,7 @@ impl KeyPair {
         };
         let pk = ge_scalarmult_base(&scalar).to_bytes();
         let mut sk = [0u8; 64];
-        sk[0..32].copy_from_slice(&seed.0);
+        sk[0..32].copy_from_slice(&*seed);
         sk[32..64].copy_from_slice(&pk);
         KeyPair {
             pk: PublicKey(pk),
@@ -409,32 +310,62 @@ impl Deref for KeyPair {
     }
 }
 
-static L: [u8; 32] = [
-    0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x14, 0xde, 0xf9, 0xde, 0xa2, 0xf7, 0x9c, 0xd6, 0x58, 0x12, 0x63, 0x1a, 0x5c, 0xf5, 0xd3, 0xed,
-];
+/// Noise, for non-deterministic signatures.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Noise([u8; Noise::BYTES]);
 
-fn check_lt_l(s: &[u8]) -> bool {
-    let mut c: u8 = 0;
-    let mut n: u8 = 1;
+impl Noise {
+    /// Number of raw bytes for a noise component.
+    pub const BYTES: usize = 16;
 
-    let mut i = 31;
-    loop {
-        c |= ((((s[i] as i32) - (L[i] as i32)) >> 8) as u8) & n;
-        n &= ((((s[i] ^ L[i]) as i32) - 1) >> 8) as u8;
-        if i == 0 {
-            break;
-        } else {
-            i -= 1;
-        }
+    /// Creates a new noise component from raw bytes.
+    pub fn new(noise: [u8; Noise::BYTES]) -> Self {
+        Noise(noise)
     }
-    c == 0
+
+    /// Creates noise from a slice.
+    pub fn from_slice(noise: &[u8]) -> Result<Self, Error> {
+        let mut noise_ = [0u8; Noise::BYTES];
+        if noise.len() != noise_.len() {
+            return Err(Error::InvalidSeed);
+        }
+        noise_.copy_from_slice(noise);
+        Ok(Noise::new(noise_))
+    }
+}
+
+impl Deref for Noise {
+    type Target = [u8; Noise::BYTES];
+
+    /// Returns a noise as raw bytes.
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(feature = "random")]
+impl Default for Noise {
+    /// Generates random noise.
+    fn default() -> Self {
+        let mut noise = [0u8; Noise::BYTES];
+        getrandom::getrandom(&mut noise).expect("RNG failure");
+        Noise(noise)
+    }
+}
+
+#[cfg(feature = "random")]
+impl Noise {
+    /// Generates random noise.
+    pub fn generate() -> Self {
+        Noise::default()
+    }
 }
 
 #[cfg(feature = "traits")]
 mod ed25519_trait {
-    use super::{PublicKey, SecretKey, Signature};
     use ::ed25519::signature as ed25519_trait;
+
+    use super::{PublicKey, SecretKey, Signature};
 
     impl ed25519_trait::Signature for Signature {
         fn from_bytes(bytes: &[u8]) -> Result<Self, ed25519_trait::Error> {
@@ -582,15 +513,20 @@ mod blind_keys {
         }
 
         /// Unblinds a public key.
-        pub fn unblind(&self, blind: &Blind) -> Result<PublicKey, Error> {
+        pub fn unblind(&self, blind: &Blind, ctx: impl AsRef<[u8]>) -> Result<PublicKey, Error> {
             let pk_p3 = GeP3::from_bytes_vartime(&self.0).ok_or(Error::InvalidPublicKey)?;
-            let hash_output = sha512::Hash::hash(&blind[..]);
+            let mut hx = sha512::Hash::new();
+            hx.update(&blind[..]);
+            hx.update(&[0u8]);
+            hx.update(ctx.as_ref());
+            let hash_output = hx.finalize();
             let (blind_factor, _) = KeyPair::split(&hash_output, true, false);
             let inverse = sc_invert(&blind_factor);
             Ok(PublicKey(ge_scalarmult(&inverse, &pk_p3).to_bytes()))
         }
 
-        /// Verifies that the signature `signature` is valid for the message `message`.
+        /// Verifies that the signature `signature` is valid for the message
+        /// `message`.
         pub fn verify(
             &self,
             message: impl AsRef<[u8]>,
@@ -629,8 +565,9 @@ mod blind_keys {
     }
 
     impl BlindSecretKey {
-        /// Computes a signature for the message `message` using the blind secret key.
-        /// The noise parameter is optional, but recommended in order to mitigate fault attacks.
+        /// Computes a signature for the message `message` using the blind
+        /// secret key. The noise parameter is optional, but recommended
+        /// in order to mitigate fault attacks.
         pub fn sign(&self, message: impl AsRef<[u8]>, noise: Option<Noise>) -> Signature {
             let nonce = {
                 let mut hasher = sha512::Hash::new();
@@ -675,9 +612,13 @@ mod blind_keys {
 
     impl PublicKey {
         /// Returns a blind version of the public key.
-        pub fn blind(&self, blind: &Blind) -> Result<BlindPublicKey, Error> {
+        pub fn blind(&self, blind: &Blind, ctx: impl AsRef<[u8]>) -> Result<BlindPublicKey, Error> {
             let (blind_factor, _prefix2) = {
-                let hash_output = sha512::Hash::hash(&blind[..]);
+                let mut hx = sha512::Hash::new();
+                hx.update(&blind[..]);
+                hx.update(&[0u8]);
+                hx.update(ctx.as_ref());
+                let hash_output = hx.finalize();
                 KeyPair::split(&hash_output, true, false)
             };
             let pk_p3 = GeP3::from_bytes_vartime(&self.0).ok_or(Error::InvalidPublicKey)?;
@@ -689,7 +630,7 @@ mod blind_keys {
 
     impl KeyPair {
         /// Returns a blind version of the key pair.
-        pub fn blind(&self, blind: &Blind) -> BlindKeyPair {
+        pub fn blind(&self, blind: &Blind, ctx: impl AsRef<[u8]>) -> BlindKeyPair {
             let seed = self.sk.seed();
             let (scalar, prefix1) = {
                 let hash_output = sha512::Hash::hash(&seed[..]);
@@ -697,7 +638,11 @@ mod blind_keys {
             };
 
             let (blind_factor, prefix2) = {
-                let hash_output = sha512::Hash::hash(&blind[..]);
+                let mut hx = sha512::Hash::new();
+                hx.update(&blind[..]);
+                hx.update(&[0u8]);
+                hx.update(ctx.as_ref());
+                let hash_output = hx.finalize();
                 KeyPair::split(&hash_output, true, false)
             };
 
@@ -731,11 +676,11 @@ fn test_blind_ed25519() {
 
     let kp = KeyPair::generate();
     let blind = Blind::new([69u8; 32]);
-    let blind_kp = kp.blind(&blind);
+    let blind_kp = kp.blind(&blind, "ctx");
     let message = b"Hello, World!";
     let signature = blind_kp.blind_sk.sign(message, None);
     assert!(blind_kp.blind_pk.verify(message, &signature).is_ok());
-    let recovered_pk = blind_kp.blind_pk.unblind(&blind).unwrap();
+    let recovered_pk = blind_kp.blind_pk.unblind(&blind, "ctx").unwrap();
     assert!(recovered_pk == kp.pk);
 
     let kp = KeyPair::from_seed(
@@ -765,10 +710,10 @@ fn test_blind_ed25519() {
         .unwrap(),
     )
     .unwrap();
-    let blind_kp = kp.blind(&blind);
+    let blind_kp = kp.blind(&blind, "ctx");
     assert_eq!(
         Hex::decode_to_vec(
-            "e52bbb204e72a816854ac82c7e244e13a8fcc3217cfdeb90c8a5a927e741a20f",
+            "246dcd43930b81d5e4d770db934a9fcd985b75fd014bc2a98b0aea02311c1836",
             None
         )
         .unwrap(),
@@ -777,6 +722,6 @@ fn test_blind_ed25519() {
 
     let message = Hex::decode_to_vec("68656c6c6f20776f726c64", None).unwrap();
     let signature = blind_kp.blind_sk.sign(message, None);
-    assert_eq!(Hex::decode_to_vec("f35d2027f14250c07b3b353359362ec31e13076a547c749a981d0135fce067a361ad6522849e6ed9f61d93b0f76428129b9eb3f9c3cd0bfa1bc2a086a5eebd09",
+    assert_eq!(Hex::decode_to_vec("947bacfabc63448f8955dc20630e069e58f37b72bb433ae17f2fa904ea860b44deb761705a3cc2168a6673ee0b41ff7765c7a4896941eec6833c1689315acb0b",
         None).unwrap(), signature.as_ref());
 }

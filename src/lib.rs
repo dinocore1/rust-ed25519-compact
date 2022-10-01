@@ -1,4 +1,4 @@
-//! A compact Ed25519 implementation for Rust.
+//! A compact Ed25519 and X25519 implementation for Rust.
 //!
 //! * Formally-verified Curve25519 field arithmetic
 //! * `no_std`-friendly
@@ -43,12 +43,24 @@
 //!
 //! Cargo features:
 //!
-//! * `self-verify`: after having computed a new signature, verify that is it valid. This is slower, but improves resilience against fault attacks. It is enabled by default on WebAssembly targets.
-//! * `std`: disables `no_std` compatibility in order to make errors implement the standard `Error` trait.
-//! * `random` (enabled by default): adds `Default` and `generate` implementations to the `Seed` and `Noise` objects, in order to securely create random keys and noise.
-//! * `traits`: add support for the traits from the ed25519 and signature crates.
-//! * `pem`: add support for importing/exporting keys as OpenSSL-compatible PEM files.
+//! * `self-verify`: after having computed a new signature, verify that is it
+//!   valid. This is slower, but improves resilience against fault attacks. It
+//!   is enabled by default on WebAssembly targets.
+//! * `std`: disables `no_std` compatibility in order to make errors implement
+//!   the standard `Error` trait.
+//! * `random` (enabled by default): adds `Default` and `generate`
+//!   implementations to the `Seed` and `Noise` objects, in order to securely
+//!   create random keys and noise.
+//! * `traits`: add support for the traits from the ed25519 and signature
+//!   crates.
+//! * `pem`: add support for importing/exporting keys as OpenSSL-compatible PEM
+//!   files.
 //! * `blind-keys`: add support for key blinding.
+//! * `opt_size`: Enable size optimizations (based on benchmarks, 8-15% size
+//!   reduction at the cost of 6.5-7% performance).
+//! * `x25519`: Enable support for the X25519 key exchange system.
+//! * `disable-signatures`: Disable support for signatures, and only compile
+//!   support for X25519.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(
@@ -61,13 +73,26 @@
     clippy::suspicious_arithmetic_impl,
     clippy::identity_op
 )]
-mod curve25519;
-mod ed25519;
+
+mod common;
 mod error;
+mod field25519;
 pub mod sha512;
 
+pub use crate::common::*;
+pub use crate::error::*;
+
+#[cfg(not(feature = "disable-signatures"))]
+mod ed25519;
+#[cfg(not(feature = "disable-signatures"))]
+mod edwards25519;
+
+#[cfg(not(feature = "disable-signatures"))]
+pub use crate::ed25519::*;
+
+#[cfg(feature = "x25519")]
+pub mod x25519;
+
+#[cfg(not(feature = "disable-signatures"))]
 #[cfg(feature = "pem")]
 mod pem;
-
-pub use crate::ed25519::*;
-pub use crate::error::*;
