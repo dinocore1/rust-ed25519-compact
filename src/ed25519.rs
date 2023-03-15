@@ -13,6 +13,7 @@ use super::sha512;
 
 /// A public key.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct PublicKey([u8; PublicKey::BYTES]);
 
 impl PublicKey {

@@ -12,7 +12,7 @@ categories = ["algorithms", "cryptography", "no-std", "wasm"]
 license = "MIT"
 
 [features]
-default = ["random", "std", "x25519", "pem"]
+default = ["random", "std", "x25519", "pem", "serialize"]
 pem = ["ct-codecs"]
 random = ["getrandom"]
 traits = ["ed25519"]
@@ -22,11 +22,13 @@ std = []
 opt_size = []
 disable-signatures = []
 x25519 = []
+serialize = ["serde"]
 
 [dependencies]
 ct-codecs = { version = "1.1", optional = true }
 getrandom = { version = "0.2", optional = true }
 ed25519 = { version = "1.5", optional = true }
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
 
 [dev-dependencies]
 getrandom = "0.2"
